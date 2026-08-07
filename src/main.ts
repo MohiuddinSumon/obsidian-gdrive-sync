@@ -124,6 +124,7 @@ export default class GDriveSyncPlugin extends Plugin {
   async saveSettings() {
     this.data.settings = this.settings;
     await this.saveData(this.data);
+    this.auth.updateCredentials(this.settings.clientId, this.settings.clientSecret);
     this.rebuildEngine();
   }
 
