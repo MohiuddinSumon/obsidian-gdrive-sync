@@ -20,6 +20,9 @@ export const DEFAULT_SETTINGS: PluginSettings = {
 };
 
 export class GDriveSyncSettingTab extends PluginSettingTab {
+  private unsubscribe: (() => void) | null = null;
+  private authStatusEl: HTMLElement | null = null;
+
   constructor(app: App, private plugin: GDriveSyncPlugin) {
     super(app, plugin);
   }
@@ -63,8 +66,13 @@ export class GDriveSyncSettingTab extends PluginSettingTab {
           });
       });
 
-    const authStatus = containerEl.createDiv();
-    this.renderAuthStatus(authStatus);
+    this.authStatusEl = containerEl.createDiv();
+    this.renderAuthStatus();
+
+    // Keep this panel in sync even if sign-in finishes in the background
+    // (e.g. it resumed automatically after an app reload) rather than
+    // from a click made on this exact open instance of the tab.
+    this.unsubscribe = this.plugin.onAuthStateChanged(() => this.renderAuthStatus());
 
     new Setting(containerEl)
       .setName("Auto-sync interval (minutes)")
@@ -106,9 +114,36 @@ export class GDriveSyncSettingTab extends PluginSettingTab {
       );
   }
 
-  private renderAuthStatus(el: HTMLElement) {
+  hide(): void {
+    this.unsubscribe?.();
+    this.unsubscribe = null;
+  }
+
+  private renderAuthStatus() {
+    const el = this.authStatusEl;
+    if (!el) return;
     el.empty();
+
     const signedIn = this.plugin.auth.isSignedIn();
+    const pending = this.plugin.getPendingDevice();
+
+    if (pending) {
+      const box = el.createDiv({ cls: "gdrive-sync-device-code" });
+      box.createEl("p", {
+        text: `Go to ${pending.verification_url} and enter this code:`,
+      });
+      box.createEl("h1", { text: pending.user_code });
+      box.createEl("p", {
+        text: "This keeps working even if you close this settings tab or switch apps.",
+        cls: "setting-item-description",
+      });
+      new Setting(el).addButton((b) =>
+        b.setButtonText("Start over with a new code").onClick(async () => {
+          await this.beginSignIn();
+        })
+      );
+      return;
+    }
 
     new Setting(el)
       .setName("Google account")
@@ -121,32 +156,24 @@ export class GDriveSyncSettingTab extends PluginSettingTab {
             if (signedIn) {
               await this.plugin.auth.signOut();
               new Notice("Signed out of Google Drive.");
-              this.renderAuthStatus(el);
+              this.renderAuthStatus();
               return;
             }
             if (!this.plugin.settings.clientId || !this.plugin.settings.clientSecret) {
               new Notice("Enter your OAuth Client ID and Secret first.");
               return;
             }
-            await this.startDeviceFlow(el);
+            await this.beginSignIn();
           })
       );
   }
 
-  private async startDeviceFlow(el: HTMLElement) {
+  private async beginSignIn() {
     try {
-      const device = await this.plugin.auth.requestDeviceCode();
-      const codeBox = el.createDiv({ cls: "gdrive-sync-device-code" });
-      codeBox.createEl("p", {
-        text: `Go to ${device.verification_url} and enter this code:`,
-      });
-      codeBox.createEl("h1", { text: device.user_code });
-
-      new Notice(`Enter code ${device.user_code} at ${device.verification_url}`, 15000);
-
-      await this.plugin.auth.pollForToken(device);
-      new Notice("Signed in to Google Drive.");
-      this.renderAuthStatus(el);
+      await this.plugin.beginSignIn();
+      // renderAuthStatus() will also be triggered via onAuthStateChanged,
+      // but call it immediately too so the code shows up without delay.
+      this.renderAuthStatus();
     } catch (e) {
       new Notice(`Sign-in failed: ${(e as Error).message}`);
     }

@@ -1,19 +1,29 @@
 import { Notice, Plugin, TFile, debounce } from "obsidian";
-import { GoogleAuth, StoredAuth } from "./googleAuth";
+import { DeviceCodeResponse, GoogleAuth, StoredAuth } from "./googleAuth";
 import { DriveClient } from "./driveClient";
 import { SyncEngine, SyncStateMap } from "./syncEngine";
 import { DEFAULT_SETTINGS, GDriveSyncSettingTab, PluginSettings } from "./settingsTab";
+
+interface PendingDevice {
+  device_code: string;
+  user_code: string;
+  verification_url: string;
+  interval: number;
+  expires_at: number; // epoch ms
+}
 
 interface PluginData {
   settings: PluginSettings;
   auth: StoredAuth | null;
   syncState: SyncStateMap;
+  pendingDevice: PendingDevice | null;
 }
 
 const DEFAULT_DATA: PluginData = {
   settings: DEFAULT_SETTINGS,
   auth: null,
   syncState: {},
+  pendingDevice: null,
 };
 
 export default class GDriveSyncPlugin extends Plugin {
@@ -26,6 +36,8 @@ export default class GDriveSyncPlugin extends Plugin {
   private statusBarEl!: HTMLElement;
   private autoSyncTimer: number | null = null;
   private syncInProgress = false;
+  private signInInFlight = false;
+  private authListeners = new Set<() => void>();
 
   async onload() {
     this.data = Object.assign({}, DEFAULT_DATA, await this.loadData());
@@ -42,6 +54,7 @@ export default class GDriveSyncPlugin extends Plugin {
       async (auth) => {
         this.data.auth = auth;
         await this.saveData(this.data);
+        this.notifyAuthListeners();
       }
     );
     this.drive = new DriveClient(this.auth);
@@ -71,6 +84,12 @@ export default class GDriveSyncPlugin extends Plugin {
     );
 
     this.restartAutoSync();
+
+    // If a sign-in was started but never finished (e.g. the app was
+    // reloaded on Android while you were approving the code in the
+    // browser), pick it back up automatically instead of leaving you
+    // stuck on the sign-in screen.
+    this.resumePendingSignIn();
   }
 
   onunload() {
@@ -121,6 +140,88 @@ export default class GDriveSyncPlugin extends Plugin {
       this.registerInterval(this.autoSyncTimer);
     }
   }
+
+  // --- Sign-in state, shared between the settings tab and app restarts ---
+
+  /** Subscribe to auth/pending-sign-in changes. Returns an unsubscribe fn. */
+  onAuthStateChanged(cb: () => void): () => void {
+    this.authListeners.add(cb);
+    return () => this.authListeners.delete(cb);
+  }
+
+  private notifyAuthListeners() {
+    this.authListeners.forEach((cb) => cb());
+  }
+
+  getPendingDevice(): PendingDevice | null {
+    const p = this.data.pendingDevice;
+    if (p && p.expires_at < Date.now()) return null;
+    return p;
+  }
+
+  /** Kicks off a fresh device-flow sign-in. Safe to call from the settings tab. */
+  async beginSignIn(): Promise<void> {
+    const device = await this.auth.requestDeviceCode();
+    const pending: PendingDevice = {
+      device_code: device.device_code,
+      user_code: device.user_code,
+      verification_url: device.verification_url,
+      interval: device.interval,
+      expires_at: Date.now() + device.expires_in * 1000,
+    };
+    this.data.pendingDevice = pending;
+    await this.saveData(this.data);
+    this.notifyAuthListeners();
+    this.pollInBackground(device);
+  }
+
+  /** Called on every plugin load — resumes an unfinished sign-in, if any. */
+  private resumePendingSignIn() {
+    const pending = this.getPendingDevice();
+    if (!pending) {
+      if (this.data.pendingDevice) {
+        // It existed but expired while the app was closed — clear it.
+        this.data.pendingDevice = null;
+        this.saveData(this.data);
+      }
+      return;
+    }
+    const remainingSeconds = Math.max(
+      Math.floor((pending.expires_at - Date.now()) / 1000),
+      1
+    );
+    this.pollInBackground({
+      device_code: pending.device_code,
+      user_code: pending.user_code,
+      verification_url: pending.verification_url,
+      interval: pending.interval,
+      expires_in: remainingSeconds,
+    });
+  }
+
+  private pollInBackground(device: DeviceCodeResponse) {
+    if (this.signInInFlight) return;
+    this.signInInFlight = true;
+
+    this.auth
+      .pollForToken(device)
+      .then(async () => {
+        this.data.pendingDevice = null;
+        await this.saveData(this.data);
+        new Notice("Signed in to Google Drive.");
+      })
+      .catch(async (e) => {
+        this.data.pendingDevice = null;
+        await this.saveData(this.data);
+        new Notice(`Google sign-in did not complete: ${(e as Error).message}`);
+      })
+      .finally(() => {
+        this.signInInFlight = false;
+        this.notifyAuthListeners();
+      });
+  }
+
+  // --- Sync ---
 
   async runSync() {
     if (this.syncInProgress) return;
