@@ -4,6 +4,6 @@
   "version": "0.1.1",
   "minAppVersion": "1.4.0",
   "description": "Direct Google Drive sync with real 3-way conflict resolution. No third-party relay server.",
-  "author": "Bon",
+  "author": "Mohiuddin Ahmed",
   "isDesktopOnly": false
 }
