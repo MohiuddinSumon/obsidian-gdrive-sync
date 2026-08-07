@@ -33,14 +33,28 @@ export class DriveClient {
     return { Authorization: `Bearer ${token}` };
   }
 
-  /** Finds the vault's root Drive folder by an appProperties tag, or creates it. */
+  /**
+   * Finds the vault's root Drive folder, or creates it.
+   *
+   * Matches by vault *name* rather than the per-install `vaultId` — the
+   * id is random and generated independently by every install (see
+   * main.ts), so two installs of the very same vault (e.g. desktop +
+   * Android) would otherwise never agree on a tag and would each create
+   * their own folder. Under the `drive.file` scope this app can only ever
+   * see files/folders it created itself (from any device) — Drive simply
+   * won't return anything else no matter the query — so a name match here
+   * is guaranteed to be "this vault, synced from elsewhere," never some
+   * unrelated folder the plugin has no business touching. `orderBy` picks
+   * the oldest one deterministically if more than one already exists
+   * (e.g. from before this fix).
+   */
   async findOrCreateVaultRoot(vaultId: string, vaultName: string): Promise<string> {
     const headers = await this.authHeader();
     const q = encodeURIComponent(
-      `appProperties has { key='obsidianVaultId' and value='${vaultId}' } and trashed = false`
+      `name = '${escapeQ(vaultName)}' and mimeType = '${FOLDER_MIME}' and 'root' in parents and trashed = false`
     );
     const res = await requestUrl({
-      url: `${API}/files?q=${q}&fields=files(id,name)&spaces=drive`,
+      url: `${API}/files?q=${q}&orderBy=createdTime&fields=files(id,name)&spaces=drive`,
       headers,
     });
     const found = res.json.files?.[0];
