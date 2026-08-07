@@ -147,6 +147,15 @@ skips the version-bump/commit step since you already did it.
 5. Repeat sign-in on your second device — as long as the vault name
    matches, it'll find and sync to the same Drive folder.
 
+**On Android**, switching to the browser to approve the code can suspend
+Obsidian in the background, which can leave the automatic check stuck
+until you come back to the app — coming back triggers a check on its own,
+but if the settings screen still shows the code after you've approved it,
+tap **"I've approved it — check now"** instead of waiting. If it fails,
+the settings screen shows the specific reason (expired code, denied
+request, rejected credentials, etc.) instead of just reverting to "Not
+signed in" silently.
+
 ## How conflict resolution works
 
 Each file's sync state tracks three things: the local content hash, the

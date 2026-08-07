@@ -27,3 +27,9 @@
   border-radius: 6px;
   cursor: pointer;
 }
+
+.gdrive-sync-auth-error {
+  color: var(--text-error);
+  font-size: var(--font-ui-small);
+  margin-top: 0.25em;
+}

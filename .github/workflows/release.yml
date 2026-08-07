@@ -4,7 +4,10 @@ name: Release
 #
 # 1. Actions tab -> "Release" -> "Run workflow", optionally typing a version.
 #    This bumps manifest.json/package.json, builds, commits, tags, and
-#    publishes the GitHub release in one go.
+#    publishes the GitHub release in one go. Leaving the version blank is
+#    safe to re-run any time — if manifest.json's current version was
+#    already tagged by an earlier run, the patch number is auto-bumped to
+#    the next free one instead of failing.
 # 2. Push a version tag yourself (e.g. `git tag 0.1.3 && git push origin 0.1.3`)
 #    after already bumping manifest.json to that version. The workflow just
 #    builds and publishes the release for that tag.
@@ -39,17 +42,45 @@ jobs:
       - name: Determine target version
         id: version
         run: |
+          git fetch --tags --force origin
+
+          EXPLICIT=0
           if [ "${{ github.event_name }}" = "push" ]; then
             VERSION="${GITHUB_REF_NAME}"
           elif [ -n "${{ inputs.version }}" ]; then
             VERSION="${{ inputs.version }}"
+            EXPLICIT=1
           else
             VERSION=$(node -p "require('./manifest.json').version")
           fi
+
           if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             echo "::error::Version '$VERSION' must be plain semver with no leading 'v' (BRAT matches the tag against manifest.json's version)."
             exit 1
           fi
+
+          # Re-running "Run workflow" with the version input left blank is
+          # meant to just work — it shouldn't die because manifest.json's
+          # current version was already tagged by a previous run. Auto-bump
+          # the patch number to the next free one instead. An *explicit*
+          # version input that collides is a real mistake, though, so that
+          # still fails loudly rather than silently picking a different one.
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && git rev-parse -q --verify "refs/tags/$VERSION" >/dev/null 2>&1; then
+            if [ "$EXPLICIT" = "1" ]; then
+              echo "::error::Tag $VERSION already exists (see https://github.com/${{ github.repository }}/releases/tag/$VERSION). Pick a version that hasn't been released yet, or leave the input blank to auto-bump the patch version."
+              exit 1
+            fi
+            echo "Tag $VERSION already exists — auto-bumping the patch version to find a free one."
+            MAJOR=$(echo "$VERSION" | cut -d. -f1)
+            MINOR=$(echo "$VERSION" | cut -d. -f2)
+            PATCH=$(echo "$VERSION" | cut -d. -f3)
+            while git rev-parse -q --verify "refs/tags/$MAJOR.$MINOR.$PATCH" >/dev/null 2>&1; do
+              PATCH=$((PATCH + 1))
+            done
+            VERSION="$MAJOR.$MINOR.$PATCH"
+            echo "Using $VERSION instead."
+          fi
+
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
       - name: Bump manifest.json / package.json
@@ -88,8 +119,12 @@ jobs:
             git commit -m "Release ${{ steps.version.outputs.version }}"
             git push origin "HEAD:${{ github.ref_name }}"
           fi
-          git tag "${{ steps.version.outputs.version }}"
-          git push origin "${{ steps.version.outputs.version }}"
+          if git rev-parse -q --verify "refs/tags/${{ steps.version.outputs.version }}" >/dev/null 2>&1; then
+            echo "::notice::Tag ${{ steps.version.outputs.version }} already exists (created by a concurrent run) — skipping tag creation, still publishing the release."
+          else
+            git tag "${{ steps.version.outputs.version }}"
+            git push origin "${{ steps.version.outputs.version }}"
+          fi
 
       - name: Create GitHub release
         uses: softprops/action-gh-release@v2

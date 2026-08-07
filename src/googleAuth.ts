@@ -39,7 +39,39 @@ export interface StoredAuth {
   expires_at: number; // epoch ms
 }
 
+export type PollOutcome =
+  | { status: "ok"; auth: StoredAuth }
+  | { status: "pending" }
+  | { status: "slow_down" };
+
+/**
+ * Turn a raw OAuth device-flow error code into something a user can act on.
+ * The most common source of confusion: the browser shows "Success! Device
+ * connected" (that only needs client_id and completes on Google's side),
+ * but the token exchange that follows also needs client_secret and can
+ * still fail — those two facts look identical from the settings screen
+ * unless the real error code is surfaced.
+ */
+function describeDeviceFlowError(code: string | undefined, status: number): string {
+  switch (code) {
+    case "access_denied":
+      return "You denied the request (or a different Google account was used) on Google's page.";
+    case "invalid_grant":
+    case "expired_token":
+      return "The code already expired or was already redeemed — tap 'Start over with a new code'.";
+    case "invalid_client":
+      return "Google rejected the Client ID/Secret during token exchange — re-check them in settings, then Sign in again (editing them alone isn't enough if a sign-in was already in progress).";
+    default:
+      return `Google auth failed: ${code ?? status}`;
+  }
+}
+
 export class GoogleAuth {
+  // Lets a caller interrupt an in-progress poll's wait and check right
+  // away — used when the app comes back to the foreground after the user
+  // finishes in the browser, instead of waiting out a possibly-stale timer.
+  private wakeResolvers: Array<() => void> = [];
+
   constructor(
     private clientId: string,
     private clientSecret: string,
@@ -61,9 +93,58 @@ export class GoogleAuth {
     return res.json;
   }
 
+  /** Wakes any pending pollForToken() wait so it checks immediately. */
+  wake(): void {
+    this.wakeResolvers.splice(0).forEach((resolve) => resolve());
+  }
+
+  private interruptibleSleep(ms: number): Promise<void> {
+    return new Promise((resolve) => {
+      const timer = setTimeout(resolve, ms);
+      this.wakeResolvers.push(() => {
+        clearTimeout(timer);
+        resolve();
+      });
+    });
+  }
+
+  /** A single token-exchange attempt — used both by the background poll
+   *  loop and by an on-demand "check now" call. */
+  async pollOnce(device: Pick<DeviceCodeResponse, "device_code">): Promise<PollOutcome> {
+    const res = await requestUrl({
+      url: TOKEN_URL,
+      method: "POST",
+      contentType: "application/x-www-form-urlencoded",
+      throw: false,
+      body: new URLSearchParams({
+        client_id: this.clientId,
+        client_secret: this.clientSecret,
+        device_code: device.device_code,
+        grant_type: "urn:ietf:params:oauth:grant-type:device_code",
+      }).toString(),
+    });
+
+    if (res.status === 200) {
+      const token: TokenResponse = res.json;
+      const auth: StoredAuth = {
+        refresh_token: token.refresh_token ?? this.getStored()?.refresh_token ?? "",
+        access_token: token.access_token,
+        expires_at: Date.now() + token.expires_in * 1000 - 60_000,
+      };
+      await this.setStored(auth);
+      return { status: "ok", auth };
+    }
+
+    const err = res.json?.error;
+    if (err === "authorization_pending") return { status: "pending" };
+    if (err === "slow_down") return { status: "slow_down" };
+    throw new Error(describeDeviceFlowError(err, res.status));
+  }
+
   /**
    * Step 2: poll until the user approves (or it expires/errors).
    * Call this right after requestDeviceCode(); it resolves once authorized.
+   * The wait between attempts can be short-circuited via wake().
    */
   async pollForToken(
     device: DeviceCodeResponse,
@@ -73,40 +154,12 @@ export class GoogleAuth {
     let intervalMs = Math.max(device.interval, 5) * 1000;
 
     while (Date.now() < deadline) {
-      await sleep(intervalMs);
+      await this.interruptibleSleep(intervalMs);
       onTick?.();
 
-      const res = await requestUrl({
-        url: TOKEN_URL,
-        method: "POST",
-        contentType: "application/x-www-form-urlencoded",
-        throw: false,
-        body: new URLSearchParams({
-          client_id: this.clientId,
-          client_secret: this.clientSecret,
-          device_code: device.device_code,
-          grant_type: "urn:ietf:params:oauth:grant-type:device_code",
-        }).toString(),
-      });
-
-      if (res.status === 200) {
-        const token: TokenResponse = res.json;
-        const auth: StoredAuth = {
-          refresh_token: token.refresh_token ?? this.getStored()?.refresh_token ?? "",
-          access_token: token.access_token,
-          expires_at: Date.now() + token.expires_in * 1000 - 60_000,
-        };
-        await this.setStored(auth);
-        return auth;
-      }
-
-      const err = res.json?.error;
-      if (err === "authorization_pending") continue;
-      if (err === "slow_down") {
-        intervalMs += 5000;
-        continue;
-      }
-      throw new Error(`Google auth failed: ${err ?? res.status}`);
+      const outcome = await this.pollOnce(device);
+      if (outcome.status === "ok") return outcome.auth;
+      if (outcome.status === "slow_down") intervalMs += 5000;
     }
     throw new Error("Device code expired before authorization completed.");
   }
@@ -163,8 +216,4 @@ export class GoogleAuth {
   async signOut(): Promise<void> {
     await this.setStored(null);
   }
-}
-
-function sleep(ms: number) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }

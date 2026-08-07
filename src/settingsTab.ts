@@ -155,11 +155,18 @@ export class GDriveSyncSettingTab extends PluginSettingTab {
         text: "This keeps working even if you close this settings tab or switch apps.",
         cls: "setting-item-description",
       });
-      new Setting(el).addButton((b) =>
-        b.setButtonText("Start over with a new code").onClick(async () => {
-          await this.beginSignIn();
-        })
-      );
+      new Setting(el)
+        .addButton((b) =>
+          b.setButtonText("I've approved it — check now").onClick(() => {
+            this.plugin.checkSignInNow();
+            new Notice("Checking…");
+          })
+        )
+        .addButton((b) =>
+          b.setButtonText("Start over with a new code").onClick(async () => {
+            await this.beginSignIn();
+          })
+        );
       return;
     }
 
@@ -184,6 +191,14 @@ export class GDriveSyncSettingTab extends PluginSettingTab {
             await this.beginSignIn();
           })
       );
+
+    const lastError = !signedIn ? this.plugin.getLastSignInError() : null;
+    if (lastError) {
+      el.createEl("p", {
+        text: `Last sign-in attempt failed: ${lastError}`,
+        cls: "gdrive-sync-auth-error",
+      });
+    }
   }
 
   private async beginSignIn() {

@@ -17,6 +17,7 @@ interface PluginData {
   auth: StoredAuth | null;
   syncState: SyncStateMap;
   pendingDevice: PendingDevice | null;
+  lastSignInError: string | null;
 }
 
 const DEFAULT_DATA: PluginData = {
@@ -24,6 +25,7 @@ const DEFAULT_DATA: PluginData = {
   auth: null,
   syncState: {},
   pendingDevice: null,
+  lastSignInError: null,
 };
 
 export default class GDriveSyncPlugin extends Plugin {
@@ -90,6 +92,14 @@ export default class GDriveSyncPlugin extends Plugin {
     // browser), pick it back up automatically instead of leaving you
     // stuck on the sign-in screen.
     this.resumePendingSignIn();
+
+    // Android suspends this app's JS timers while you're in the browser
+    // approving the code, so the background poll's wait can end up
+    // stuck long after you're back. Nudge it the moment the app is
+    // visible again instead of waiting out whatever's left of the timer.
+    this.registerDomEvent(document, "visibilitychange", () => {
+      if (document.visibilityState === "visible") this.checkSignInNow();
+    });
   }
 
   onunload() {
@@ -160,6 +170,12 @@ export default class GDriveSyncPlugin extends Plugin {
     return p;
   }
 
+  /** The reason the most recent sign-in attempt failed, if any — shown in
+   *  settings so it doesn't just flash by in a toast and get missed. */
+  getLastSignInError(): string | null {
+    return this.data.lastSignInError;
+  }
+
   /** Kicks off a fresh device-flow sign-in. Safe to call from the settings tab. */
   async beginSignIn(): Promise<void> {
     const device = await this.auth.requestDeviceCode();
@@ -171,12 +187,28 @@ export default class GDriveSyncPlugin extends Plugin {
       expires_at: Date.now() + device.expires_in * 1000,
     };
     this.data.pendingDevice = pending;
+    this.data.lastSignInError = null;
     await this.saveData(this.data);
     this.notifyAuthListeners();
     // Redundant fallback in case the settings-tab UI doesn't render for any
     // reason — the code is still visible as a toast either way.
     new Notice(`Enter code ${device.user_code} at ${device.verification_url}`, 20000);
     this.pollInBackground(device);
+  }
+
+  /** Nudges an in-progress sign-in to check right now instead of waiting
+   *  out its timer — called when the app regains focus, and available as
+   *  a manual "Check now" button for whenever that's not enough (e.g. the
+   *  whole app process was suspended/killed while backgrounded and the
+   *  poll loop needs restarting from scratch). */
+  checkSignInNow(): void {
+    const pending = this.getPendingDevice();
+    if (!pending) return;
+    if (this.signInInFlight) {
+      this.auth.wake();
+    } else {
+      this.resumePendingSignIn();
+    }
   }
 
   /** Called on every plugin load — resumes an unfinished sign-in, if any. */
@@ -211,13 +243,15 @@ export default class GDriveSyncPlugin extends Plugin {
       .pollForToken(device)
       .then(async () => {
         this.data.pendingDevice = null;
+        this.data.lastSignInError = null;
         await this.saveData(this.data);
         new Notice("Signed in to Google Drive.");
       })
       .catch(async (e) => {
         this.data.pendingDevice = null;
+        this.data.lastSignInError = (e as Error).message;
         await this.saveData(this.data);
-        new Notice(`Google sign-in did not complete: ${(e as Error).message}`);
+        new Notice(`Google sign-in did not complete: ${(e as Error).message}`, 10000);
       })
       .finally(() => {
         this.signInInFlight = false;
