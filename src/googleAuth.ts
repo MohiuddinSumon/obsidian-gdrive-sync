@@ -1,4 +1,4 @@
-import { requestUrl } from "obsidian";
+import { requestUrl, RequestUrlResponse } from "obsidian";
 
 /**
  * Google OAuth 2.0 Device Authorization flow.
@@ -42,7 +42,8 @@ export interface StoredAuth {
 export type PollOutcome =
   | { status: "ok"; auth: StoredAuth }
   | { status: "pending" }
-  | { status: "slow_down" };
+  | { status: "slow_down" }
+  | { status: "network_error"; message: string };
 
 /**
  * Turn a raw OAuth device-flow error code into something a user can act on.
@@ -111,18 +112,28 @@ export class GoogleAuth {
   /** A single token-exchange attempt — used both by the background poll
    *  loop and by an on-demand "check now" call. */
   async pollOnce(device: Pick<DeviceCodeResponse, "device_code">): Promise<PollOutcome> {
-    const res = await requestUrl({
-      url: TOKEN_URL,
-      method: "POST",
-      contentType: "application/x-www-form-urlencoded",
-      throw: false,
-      body: new URLSearchParams({
-        client_id: this.clientId,
-        client_secret: this.clientSecret,
-        device_code: device.device_code,
-        grant_type: "urn:ietf:params:oauth:grant-type:device_code",
-      }).toString(),
-    });
+    // A network-level failure (DNS not resolving, briefly offline, Wi-Fi
+    // reassociating right as Android brings the app back to the
+    // foreground) throws instead of returning a response — that's
+    // transient and says nothing about the device code itself, so it
+    // must not be treated the same as Google rejecting the request.
+    let res: RequestUrlResponse;
+    try {
+      res = await requestUrl({
+        url: TOKEN_URL,
+        method: "POST",
+        contentType: "application/x-www-form-urlencoded",
+        throw: false,
+        body: new URLSearchParams({
+          client_id: this.clientId,
+          client_secret: this.clientSecret,
+          device_code: device.device_code,
+          grant_type: "urn:ietf:params:oauth:grant-type:device_code",
+        }).toString(),
+      });
+    } catch (e) {
+      return { status: "network_error", message: (e as Error).message };
+    }
 
     if (res.status === 200) {
       const token: TokenResponse = res.json;
@@ -160,6 +171,9 @@ export class GoogleAuth {
       const outcome = await this.pollOnce(device);
       if (outcome.status === "ok") return outcome.auth;
       if (outcome.status === "slow_down") intervalMs += 5000;
+      // "pending" and "network_error" both just retry on the next tick —
+      // a dropped connection is not a reason to give up on an otherwise
+      // still-valid, still-unexpired device code.
     }
     throw new Error("Device code expired before authorization completed.");
   }
