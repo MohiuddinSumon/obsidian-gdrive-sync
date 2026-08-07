@@ -153,6 +153,13 @@ export class GoogleAuth {
     return this.getStored() !== null;
   }
 
+  /** Call after the OAuth Client ID/Secret change in settings, so an
+   *  in-progress or future sign-in doesn't use stale credentials. */
+  updateCredentials(clientId: string, clientSecret: string): void {
+    this.clientId = clientId;
+    this.clientSecret = clientSecret;
+  }
+
   async signOut(): Promise<void> {
     await this.setStored(null);
   }

@@ -74,6 +74,67 @@ GitHub repo, and works identically on desktop and Android:
    permission wrangling.
 5. Enable "Google Drive Sync (Custom)" in Community plugins.
 
+## Publishing a release (for BRAT)
+
+BRAT installs from **GitHub releases**, not just from whatever's on a
+branch — it looks at your repo's releases for a tag and, on that release,
+downloads `main.js`, `manifest.json`, and `styles.css` as individual
+attached files (not the "Source code" zip). If any of that's missing or
+the tag doesn't line up with `manifest.json`, BRAT can't find or install
+the update.
+
+### Automated (recommended): `.github/workflows/release.yml`
+
+Cut a release on demand, whenever you want, without doing any of the
+version-bump/build/tag/attach steps by hand:
+
+1. Go to this repo's **Actions** tab → **Release** workflow → **Run
+   workflow**.
+2. Optionally type a version (e.g. `0.1.3`, no `v` prefix). Leave it blank
+   to release whatever version is currently in `manifest.json`.
+3. Run it. The workflow bumps `manifest.json`/`package.json` (if you gave
+   a version), builds `main.js`, commits, tags the commit with that
+   version, and publishes a GitHub release with `main.js`, `manifest.json`,
+   and `styles.css` attached as release assets — everything BRAT needs.
+
+Existing BRAT installs pick up the update automatically on their next
+check; new installs follow the **Add Beta Plugin** steps above.
+
+Alternatively, push a version tag yourself after bumping
+`manifest.json` locally (`git tag 0.1.3 && git push origin 0.1.3`) — the
+same workflow builds and publishes the release for that tag, it just
+skips the version-bump/commit step since you already did it.
+
+### Manual (if you'd rather not use Actions)
+
+1. **Bump the version** in both `manifest.json` and `package.json` (keep
+   them identical), e.g. `0.1.2` → `0.1.3`. Semantic versioning, no `v`
+   prefix.
+2. **Build** the plugin so `main.js` is up to date:
+   ```
+   npm install
+   npm run build
+   ```
+3. **Commit** the version bump and the rebuilt `main.js`, then push.
+4. **Tag the commit with the exact version string** from `manifest.json`
+   (again, no `v` prefix — BRAT matches the tag name against
+   `manifest.json`'s `version` field):
+   ```
+   git tag 0.1.3
+   git push origin 0.1.3
+   ```
+5. **Create the GitHub release** from that tag (GitHub UI: Releases →
+   Draft a new release → choose the tag; or `gh release create 0.1.3`).
+6. **Attach three files as binary release assets** — drag them into the
+   release's "Attach binaries" area (or pass them to `gh release create`):
+   - `main.js`
+   - `manifest.json`
+   - `styles.css`
+
+   These must be uploaded as release assets, not just be present in the
+   repo — BRAT fetches them from the release, not from the branch.
+7. Publish the release.
+
 ## First sync
 
 1. Open plugin settings, enter your Client ID / Secret, click **Sign in**.
