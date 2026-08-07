@@ -6,7 +6,24 @@
   margin-top: 0.5em;
 }
 
-.gdrive-sync-device-code h1 {
-  letter-spacing: 0.15em;
+.gdrive-sync-code-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.75em;
+  margin: 0.5em 0;
+}
+
+.gdrive-sync-code-text {
+  font-size: 1.8em;
+  font-weight: 700;
+  letter-spacing: 0.12em;
   font-family: var(--font-monospace);
+  color: var(--text-normal);
+}
+
+.gdrive-sync-copy-btn {
+  padding: 0.3em 0.9em;
+  border-radius: 6px;
+  cursor: pointer;
 }

@@ -172,6 +172,9 @@ export default class GDriveSyncPlugin extends Plugin {
     this.data.pendingDevice = pending;
     await this.saveData(this.data);
     this.notifyAuthListeners();
+    // Redundant fallback in case the settings-tab UI doesn't render for any
+    // reason — the code is still visible as a toast either way.
+    new Notice(`Enter code ${device.user_code} at ${device.verification_url}`, 20000);
     this.pollInBackground(device);
   }
 

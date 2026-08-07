@@ -132,7 +132,25 @@ export class GDriveSyncSettingTab extends PluginSettingTab {
       box.createEl("p", {
         text: `Go to ${pending.verification_url} and enter this code:`,
       });
-      box.createEl("h1", { text: pending.user_code });
+
+      const codeRow = box.createDiv({ cls: "gdrive-sync-code-row" });
+      codeRow.createEl("span", {
+        text: pending.user_code,
+        cls: "gdrive-sync-code-text",
+      });
+      const copyBtn = codeRow.createEl("button", {
+        text: "Copy",
+        cls: "gdrive-sync-copy-btn",
+      });
+      copyBtn.onclick = async () => {
+        try {
+          await navigator.clipboard.writeText(pending.user_code);
+          new Notice("Code copied.");
+        } catch {
+          new Notice(`Code: ${pending.user_code}`, 10000);
+        }
+      };
+
       box.createEl("p", {
         text: "This keeps working even if you close this settings tab or switch apps.",
         cls: "setting-item-description",
